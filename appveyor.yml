@@ -18,8 +18,9 @@ branches:
 # Operating system (build VM template)
 os: Windows Server 2012
 
-matrix:
-  - project_name: src/HDInsightManagementCLI/HDInsightManagementCLI.sln
+environment:
+  matrix:
+    - project_name: src/HDInsightManagementCLI/HDInsightManagementCLI.sln
 
 # enable patching of AssemblyInfo.* files
 assembly_info:
@@ -65,4 +66,3 @@ on_failure:
 # after build failure or success
 on_finish:
   - echo "Build complete!"
-
