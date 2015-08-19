@@ -19,7 +19,7 @@ branches:
 os: Windows Server 2012
 
 matrix:
-  - solution_name: src\HDInsightManagementCLI\HDInsightManagementCLI.sln
+  - project_name: src/HDInsightManagementCLI/HDInsightManagementCLI.sln
 
 # enable patching of AssemblyInfo.* files
 assembly_info:
@@ -33,20 +33,13 @@ assembly_info:
 #       build configuration       #
 #---------------------------------#
 
-# to add several platforms to build matrix:
-platform:
-  - x86
-  - x64
-  - Any CPU
-
-# to add several configurations to build matrix:
-configuration:
-  - Debug
-  - Release
-
+before_build: 
+  - echo %project_name%
+  - nuget restore %project_name% -verbosity detailed
+  
 build:
-  parallel: true                  # enable MSBuild parallel builds
-  project: $(solution_name)       # path to Visual Studio solutions or projects
+  parallel: true
+  project: $(project_name)
 
   # MSBuild verbosity level
   verbosity: normal
