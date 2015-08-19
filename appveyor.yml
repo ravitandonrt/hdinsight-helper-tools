@@ -1,0 +1,75 @@
+#---------------------------------#
+#      general configuration      #
+#---------------------------------#
+
+# version format
+version: 1.0.{build}
+
+# branches to build
+branches:
+  # whitelist
+  only:
+    - master
+
+#---------------------------------#
+#    environment configuration    #
+#---------------------------------#
+
+# Operating system (build VM template)
+os: Windows Server 2012
+
+matrix:
+  - solution_name: src\HDInsightManagementCLI\HDInsightManagementCLI.sln
+
+# enable patching of AssemblyInfo.* files
+assembly_info:
+  patch: true
+  file: AssemblyInfo.*
+  assembly_version: "1.0.{build}"
+  assembly_file_version: "{version}"
+  assembly_informational_version: "{version}"
+
+#---------------------------------#
+#       build configuration       #
+#---------------------------------#
+
+# to add several platforms to build matrix:
+platform:
+  - x86
+  - x64
+  - Any CPU
+
+# to add several configurations to build matrix:
+configuration:
+  - Debug
+  - Release
+
+build:
+  parallel: true                  # enable MSBuild parallel builds
+  project: $(solution_name)       # path to Visual Studio solutions or projects
+
+  # MSBuild verbosity level
+  verbosity: normal
+
+#---------------------------------#
+#       tests configuration       #
+#---------------------------------#
+
+test: off
+
+#---------------------------------#
+#        global handlers          #
+#---------------------------------#
+
+# on successful build
+on_success:
+  - echo "Success!"
+
+# on build failure
+on_failure:
+  - echo "Failure!"
+
+# after build failure or success
+on_finish:
+  - echo "Build complete!"
+
