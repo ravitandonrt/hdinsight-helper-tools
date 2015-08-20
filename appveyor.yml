@@ -34,10 +34,11 @@ assembly_info:
 #       build configuration       #
 #---------------------------------#
 
-before_build: 
+before_build:
+  - appveyor DownloadFile https://raw.githubusercontent.com/appveyor/ci/master/scripts/nuget-restore.cmd
   - echo %project_name%
-  - nuget restore %project_name% -verbosity detailed
-  
+  - nuget-restore %project_name%
+
 build:
   parallel: true
   project: $(project_name)
@@ -46,23 +47,11 @@ build:
   verbosity: normal
 
 #---------------------------------#
-#       tests configuration       #
+#           artifacts             #
 #---------------------------------#
 
-test: off
+artifacts:
+  - path: src\HDInsightManagementCLI\bin
+    name: HDInsightManagementCLI.{version}
+    type: zip
 
-#---------------------------------#
-#        global handlers          #
-#---------------------------------#
-
-# on successful build
-on_success:
-  - echo "Success!"
-
-# on build failure
-on_failure:
-  - echo "Failure!"
-
-# after build failure or success
-on_finish:
-  - echo "Build complete!"
