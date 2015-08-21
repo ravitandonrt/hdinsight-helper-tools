@@ -21,63 +21,90 @@ namespace HDInsightClusterLogsDownloader
         private static readonly ILog Logger = LogManager.GetLogger(typeof(HDInsightClusterLogsDownloader));
 
         public const int MAX_LOGS = 100000;
-        public const TimeSpan timeout = TimeSpan.FromMinutes(15);
+        public static TimeSpan timeout = TimeSpan.FromMinutes(15);
 
         static void Main(string[] args)
         {
-            string storageAccountName = ConfigurationManager.AppSettings.Get("StorageAccountName");
-            string storageAccountKey = ConfigurationManager.AppSettings.Get("StorageAccountKey");
-            string storageAccountEndpointSuffix = ConfigurationManager.AppSettings.Get("StorageAccountEndpointSuffix");
-            string storageAccountTableNamePrefix = ConfigurationManager.AppSettings.Get("storageAccountTableNamePrefix");
-            string storageAccountTableName = ConfigurationManager.AppSettings.Get("StorageAccountTableName");
-
-            var clusterOperatingSystemType = (OperatingSystemType)Enum.Parse(typeof(OperatingSystemType), ConfigurationManager.AppSettings.Get("ClusterOperatingSystemType"));
-
-            var credentials = new StorageCredentials(storageAccountName, storageAccountKey);
-            var cloudStorageAccount = new CloudStorageAccount(credentials, storageAccountEndpointSuffix, true);
-            var cloudTableClient = cloudStorageAccount.CreateCloudTableClient();
-
-            CloudTable cloudTable = null;
-            if (String.IsNullOrWhiteSpace(storageAccountTableName))
+            bool failure = false;
+            try
             {
-                var cloudTables = cloudTableClient.ListTables(storageAccountTableNamePrefix).Where(t => t.Name.EndsWith("hadoopservicelog", StringComparison.OrdinalIgnoreCase)).ToList();
-                Logger.InfoFormat("Found {0} 'hadoopservicelog' tables:\r\n{1}", cloudTables.Count, String.Join(Environment.NewLine, cloudTables.Select(t => t.Name)));
-                if (cloudTables.Count == 1)
+                string storageAccountName = GetConfig("StorageAccountName");
+                string storageAccountKey = GetConfig("StorageAccountKey");
+                string storageAccountEndpointSuffix = GetConfig("StorageAccountEndpointSuffix");
+                string storageAccountTableNamePrefix = GetConfig("storageAccountTableNamePrefix", false);
+                string storageAccountTableName = GetConfig("StorageAccountTableName", false);
+
+                var clusterOperatingSystemType = (OperatingSystemType)Enum.Parse(typeof(OperatingSystemType), GetConfig("ClusterOperatingSystemType"));
+
+                var credentials = new StorageCredentials(storageAccountName, storageAccountKey);
+                var cloudStorageAccount = new CloudStorageAccount(credentials, storageAccountEndpointSuffix, true);
+                var cloudTableClient = cloudStorageAccount.CreateCloudTableClient();
+
+                CloudTable cloudTable = null;
+                if (String.IsNullOrWhiteSpace(storageAccountTableName))
                 {
-                    storageAccountTableName = cloudTables.First().Name;
-                }
-                else
-                {
-                    if (cloudTables.Count == 0)
+                    var cloudTables = cloudTableClient.ListTables(storageAccountTableNamePrefix).Where(t => t.Name.EndsWith("hadoopservicelog", StringComparison.OrdinalIgnoreCase)).ToList();
+                    Logger.InfoFormat("Found '{0}' hadoopservicelog tables:\r\n{1}", cloudTables.Count, 
+                        String.Join(Environment.NewLine, cloudTables.Select(t => t.Name)));
+                    if (cloudTables.Count == 1)
                     {
-                        Logger.Error("No tables found with this prefix, try a shorter prefix. Prefix: " + storageAccountTableNamePrefix);
+                        storageAccountTableName = cloudTables.First().Name;
                     }
                     else
                     {
-                        Logger.Error("More than one table found with same prefix, please pick one and use that name.");
+                        if (cloudTables.Count == 0)
+                        {
+                            Logger.Error("No tables found with this prefix, try a shorter prefix. Prefix: " + storageAccountTableNamePrefix);
+                        }
+                        else
+                        {
+                            Logger.Error("More than one table found with same prefix, please pick one and use that name for config: StorageAccountTableName.");
+                        }
+                        Environment.Exit(1);
                     }
-                    Environment.Exit(1);
                 }
+
+                cloudTable = cloudTableClient.GetTableReference(storageAccountTableName);
+
+                var dateTimeMin = DateTimeOffset.UtcNow.AddHours(-2);
+                var dateTimeMax = dateTimeMin.AddMinutes(5);
+
+                //var dateTimeMin = new DateTime(2015, 8, 19, 8, 55, 0, DateTimeKind.Utc);
+                //var dateTimeMax = new DateTime(2015, 8, 19, 9, 10, 0, DateTimeKind.Utc);
+
+                var stopwatch = Stopwatch.StartNew();
+                GetLogs(clusterOperatingSystemType, cloudTable, dateTimeMin, dateTimeMax);
+
+                Logger.InfoFormat("Done! Total Time Elapsed: {0} secs", stopwatch.Elapsed.TotalSeconds);
             }
-
-            cloudTable = cloudTableClient.GetTableReference(storageAccountTableName);
-
-            var dateTimeMin = DateTimeOffset.UtcNow.AddHours(-2);
-            var dateTimeMax = dateTimeMin.AddMinutes(5);
-            
-            //var dateTimeMin = new DateTime(2015, 8, 19, 8, 55, 0, DateTimeKind.Utc);
-            //var dateTimeMax = new DateTime(2015, 8, 19, 9, 10, 0, DateTimeKind.Utc);
-
-            var stopwatch = Stopwatch.StartNew();
-            GetLogs(clusterOperatingSystemType, cloudTable, dateTimeMin, dateTimeMax);
-
-            Logger.InfoFormat("Done! Total Time Elapsed: {0} secs", stopwatch.Elapsed.TotalSeconds);
+            catch(Exception ex)
+            {
+                Logger.Error("An error occurred while dowloading cluster logs. Details:", ex);
+                failure = true;
+            }
 
             if(Debugger.IsAttached)
             {
                 Logger.InfoFormat("Press a key to exit...");
                 Console.ReadKey();
             }
+
+            if(failure)
+            {
+                Environment.Exit(-1);
+            }
+        }
+
+        public static string GetConfig(string config, bool throwOnEmpty = true)
+        {
+            var value = ConfigurationManager.AppSettings.Get(config);
+            if(throwOnEmpty && String.IsNullOrWhiteSpace(value))
+            {
+                throw new ArgumentNullException(config, 
+                    String.Format("Please make sure you provide a valid value for key: {0} in App.config", config));
+            }
+            Logger.InfoFormat("Config: {0}, Value: {1}", config, value);
+            return value;
         }
 
         public static void GetLogs(
@@ -179,8 +206,8 @@ namespace HDInsightClusterLogsDownloader
                         logList.AddRange(currentSegment.Results as List<HadoopServiceLogEntity>);
                     }
 
-                    Logger.InfoFormat("Rows Retreived: {0}, Time Elapsed: {1:0.00}, Continuation Token: {2}", 
-                        logList.Count, stopwatch.Elapsed.TotalSeconds, currentSegment.ContinuationToken);
+                    Logger.InfoFormat("Rows Retreived: {0}, Time Elapsed: {1:0.00} secs", 
+                        logList.Count, stopwatch.Elapsed.TotalSeconds);
                     if (logList.Count >= MAX_LOGS || stopwatch.Elapsed > timeout)
                     {
                         Logger.ErrorFormat("Your query result is either very large or taking too long, aborting the fetch. Rows: {0}", logList.Count);
