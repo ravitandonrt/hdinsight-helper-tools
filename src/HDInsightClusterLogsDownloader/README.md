@@ -11,10 +11,10 @@ Specifying wide or large filter ranges will make the query take a long time to d
 Currently aborts at 100000 rows or 15 minutes - whichever is earlier to avoid out of memory issues.
 
 Logs from you **hadoopservicelog** table (below is a snapshot from a Linux Storm cluster):
-![Image of HadoopServiceLog workbook](HadoopServiceLog.png)
+![Image of HadoopServiceLog workbook](images/HadoopServiceLog.png)
 
 The excel workbook also contains the ability to create Pivot table to show components failing the most:
-![Image of PivotTableComponentErrorWarn workbook](PivotTableComponentErrorWarn.png)
+![Image of PivotTableComponentErrorWarn workbook](images/PivotTableComponentErrorWarn.png)
 
 ## References
 * https://social.msdn.microsoft.com/Forums/azure/en-US/8a1b48a3-2617-4a2c-980f-4022005a9afa/question-about-logging-in-storm-with-hdinsight?forum=hdinsight
