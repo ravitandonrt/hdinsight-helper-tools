@@ -21,6 +21,7 @@ os: Windows Server 2012
 environment:
   matrix:
     - project_name: src/HDInsightManagementCLI/HDInsightManagementCLI.sln
+    - project_name: src/HDInsightClusterLogsDownloader/HDInsightClusterLogsDownloader.sln
 
 # enable patching of AssemblyInfo.* files
 assembly_info:
@@ -52,6 +53,8 @@ build:
 
 artifacts:
   - path: src\HDInsightManagementCLI\bin
-    name: HDInsightManagementCLI.{version}
+    name: HDInsightManagementCLI
     type: zip
-
+  - path: src\HDInsightClusterLogsDownloader\bin
+    name: HDInsightClusterLogsDownloader
+    type: zip

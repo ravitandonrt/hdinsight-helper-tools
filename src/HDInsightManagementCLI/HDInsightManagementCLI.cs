@@ -9,10 +9,11 @@ using Microsoft.IdentityModel.Clients.ActiveDirectory;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace HDInsightManagementCLI
 {
@@ -30,8 +31,9 @@ namespace HDInsightManagementCLI
         static TokenCloudCredentials tokenCloudCredentials;
         static HDInsightManagementClient hdInsightManagementClient;
 
-        static int Main(string[] args)
+        public static int Main(string[] args)
         {
+            var command = string.Empty;
             try
             {
                 if (args.Length == 0)
@@ -41,7 +43,7 @@ namespace HDInsightManagementCLI
                     return 9999;
                 }
 
-                string command = args[0];
+                command = args[0];
                 if ((command == "help") || (command == "/?"))
                 {
                     ShowHelp();
@@ -66,6 +68,7 @@ namespace HDInsightManagementCLI
                 var token = ac.AcquireToken(config.AzureManagementUri, config.AzureActiveDirectoryClientId,
                     new Uri(config.AzureActiveDirectoryRedirectUri), PromptBehavior.Auto);
 
+                Logger.InfoFormat("Acquired Azure ActiveDirectory Token for User: {0} with Expiry: {1}", token.UserInfo.GivenName, token.ExpiresOn);
                 tokenCloudCredentials = new TokenCloudCredentials(config.SubscriptionId, token.AccessToken);
 
                 Logger.InfoFormat("Connecting to AzureResourceManagementUri endpoint at {0}", config.AzureResourceManagementUri);
@@ -129,7 +132,7 @@ namespace HDInsightManagementCLI
                             }
 
                             Create(config.SubscriptionId, config.ResourceGroupName, config.ClusterDnsName, config.ClusterLocation, config.WasbAccounts,
-                                config.ClusterSize, config.ClusterUserName, config.ClusterPassword, config.HDInsightVersion,
+                                config.ClusterSize, config.ClusterUsername, config.ClusterPassword, config.HDInsightVersion,
                                 config.SqlAzureMetastores, config.ClusterType, config.OSType);
                             break;
                         }
@@ -273,14 +276,14 @@ namespace HDInsightManagementCLI
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine(ex.ToString());
+                Logger.Error(String.Format("Command '{0}' failed. Error Information:", command ?? "null") , ex);
                 return -1;
             }
             finally
             {
                 if (Debugger.IsAttached && !config.SilentMode)
                 {
-                    Logger.InfoFormat("Press any key to exit...");
+                    Logger.Info("Press any key to exit...");
                     Console.ReadKey();
                 }
             }
@@ -290,9 +293,11 @@ namespace HDInsightManagementCLI
 
         private static string ClusterToString(Cluster cluster)
         {
-            return String.Format("\r\n\tResourceGroup: {0}\r\n\t{1}",
-                HDInsightManagementCLIHelpers.GetResourceGroupNameFromClusterId(cluster.Id),
-                cluster.ToDisplayString().Replace("\n", "\n\t"));
+            var sb = new StringBuilder();
+            sb.AppendFormat("\r\n\tResourceGroup: {0}\r\n", HDInsightManagementCLIHelpers.GetResourceGroupNameFromClusterId(cluster.Id));
+            sb.AppendFormat("\t{0}\r\n", cluster.ToDisplayString().Replace("\n", "\n\t"));
+            sb.AppendFormat("\tUserClusterTablePrefix: {0}\r\n", HDInsightManagementCLIHelpers.GetUserClusterTablePrefix(cluster));
+            return sb.ToString();
         }
 
         private static void Resize(string resourceGroup, string ClusterDnsName, int newSize)
@@ -377,23 +382,25 @@ namespace HDInsightManagementCLI
                     String.Join(Environment.NewLine + "\t\t", c.Value.AvailableVmSizes))));
         }
 
+        static void CreateResourceGroup(string azureResourceManagementUri, string resourceGroupName, string location)
+        {
+            var resourceClient = new ResourceManagementClient(tokenCloudCredentials, new Uri(azureResourceManagementUri));
+            resourceClient.ResourceGroups.CreateOrUpdate(
+                resourceGroupName,
+                new ResourceGroup
+                {
+                    Location = location,
+                });
+
+            resourceClient.Providers.Register("Microsoft.HDInsight");
+        }
+
         static void Create(string subscriptionId, string resourceGroupName, string clusterDnsName, string clusterLocation,
-            List<AzureStorageConfig> asvAccounts, int clusterSize, string clusterUserName, string clusterPassword,
+            List<AzureStorageConfig> asvAccounts, int clusterSize, string clusterUsername, string clusterPassword,
             string hdInsightVersion, List<SqlAzureConfig> sqlAzureMetaStores,
             ClusterType clusterType, OperatingSystemType osType)
         {
             Logger.InfoFormat("ResourceGroup: {0}, Cluster: {1} - Submitting a new cluster deployment request", resourceGroupName, clusterDnsName);
-
-            if (string.IsNullOrWhiteSpace(clusterPassword))
-            {
-                Logger.InfoFormat("Generating random cluster password of length 24 using System.Web.Security.Membership.GeneratePassword");
-                do
-                {
-                    clusterPassword = System.Web.Security.Membership.GeneratePassword(24, 2);
-                }
-                while (!Regex.IsMatch(clusterPassword, HDInsightManagementCLIHelpers.HDInsightPasswordValidationRegex));
-                Logger.InfoFormat("PLEASE NOTE: New cluster password: {0}. If the cluster was created previously you should use the previously generated password instead.", clusterPassword);
-            }
 
             var clusterCreateParameters = new ClusterCreateParameters()
                 {
@@ -404,28 +411,31 @@ namespace HDInsightManagementCLI
                     DefaultStorageContainer = asvAccounts[0].Container,
                     Location = clusterLocation,
                     Password = clusterPassword,
-                    UserName = clusterUserName,
+                    UserName = clusterUsername,
                     Version = hdInsightVersion,
                     OSType = (OSType)Enum.Parse(typeof(OSType), osType.ToString()),
                 };
 
             if (clusterCreateParameters.OSType == OSType.Linux)
             {
-                clusterCreateParameters.SshUserName = clusterUserName;
-                clusterCreateParameters.SshPassword = clusterPassword;
+                clusterCreateParameters.SshUserName = config.SshUsername;
+                if (String.IsNullOrWhiteSpace(config.SshPassword))
+                {
+                    var publicKey = File.ReadAllText(config.SshPublicKeyFilePath);
+                    Logger.Debug("SSH RSA Public Key: " + Environment.NewLine + publicKey + Environment.NewLine);
+                    clusterCreateParameters.SshPublicKey = publicKey;
+                }
+                else
+                {
+                    clusterCreateParameters.SshPassword = config.SshPassword;
+                }
             }
             else
             {
                 if (config.AutoEnableRdp)
                 {
-                    var rdpPassword = config.RdpPassword;
-                    if (string.IsNullOrWhiteSpace(rdpPassword))
-                    {
-                        rdpPassword = clusterPassword;
-                        Logger.InfoFormat("RDP password: {0}", rdpPassword);
-                    }
                     clusterCreateParameters.RdpUsername = config.RdpUsername;
-                    clusterCreateParameters.RdpPassword = rdpPassword;
+                    clusterCreateParameters.RdpPassword = config.RdpPassword;
                     clusterCreateParameters.RdpAccessExpiry = DateTime.Now.AddDays(int.Parse(config.RdpExpirationInDays));
                 }
             }
@@ -447,23 +457,15 @@ namespace HDInsightManagementCLI
                 }
             }
 
-            var resourceClient = new ResourceManagementClient(tokenCloudCredentials, new Uri(config.AzureResourceManagementUri));
-            resourceClient.ResourceGroups.CreateOrUpdate(
-                resourceGroupName,
-                new ResourceGroup
-                {
-                    Location = clusterLocation,
-                });
-
-            resourceClient.Providers.Register("Microsoft.HDInsight");
-
             var localStopWatch = Stopwatch.StartNew();
 
             var createTask = hdInsightManagementClient.Clusters.CreateAsync(resourceGroupName, clusterDnsName, clusterCreateParameters);
             Logger.InfoFormat("Cluster: {0} - Create cluster request submitted with task id: {1}, task status: {2}",
                 clusterDnsName, createTask.Id, createTask.Status);
 
-            var error = MonitorCreate(resourceGroupName, clusterDnsName);
+            Thread.Sleep(pollInterval);
+
+            var error = MonitorCreate(resourceGroupName, clusterDnsName, createTask);
 
             if (error)
             {
@@ -486,13 +488,22 @@ namespace HDInsightManagementCLI
             }
         }
 
-        static bool MonitorCreate(string resourceGroupName, string ClusterDnsName)
+        static bool MonitorCreate(string resourceGroupName, string ClusterDnsName, Task<ClusterGetResponse> createTask = null)
         {
             bool error = false;
             Cluster cluster = null;
             var localStopWatch = Stopwatch.StartNew();
             do
             {
+                Logger.InfoFormat("Cluster: {0} - Create Task Id: {1}, Task Status: {2}, Time: {3:0.00} secs",
+                    ClusterDnsName, createTask.Id, createTask.Status, localStopWatch.Elapsed.TotalSeconds);
+                
+                if (createTask != null && (createTask.IsFaulted || createTask.IsCanceled))
+                {
+                    error = true;
+                    break;
+                }
+
                 try
                 {
                     cluster = hdInsightManagementClient.Clusters.Get(resourceGroupName, ClusterDnsName).Cluster;
@@ -524,9 +535,6 @@ namespace HDInsightManagementCLI
                     if (cluster.Properties.ProvisioningState == HDInsightClusterProvisioningState.Succeeded ||
                         String.Compare(cluster.Properties.ClusterState, "Running", StringComparison.OrdinalIgnoreCase) == 0)
                     {
-                        Logger.InfoFormat("Cluster: {0} - Created successfully and is ready to use", cluster.Name);
-                        Logger.InfoFormat("Cluster ConnectivityEndpoints:\r\n{0}",
-                            String.Join(Environment.NewLine, cluster.Properties.ConnectivityEndpoints.Select(c => c.ToDisplayString(false))));
                         error = false;
                         break;
                     }
@@ -558,9 +566,21 @@ namespace HDInsightManagementCLI
             }
             while (!error);
 
+            if (createTask != null)
+            {
+                Logger.InfoFormat("Task Result:\r\n{0}", createTask.Result.ToDisplayString());
+            }
+
             if (cluster != null)
             {
                 Logger.InfoFormat("Cluster details:" + Environment.NewLine + ClusterToString(cluster));
+            }
+
+            if(!error)
+            {
+                Logger.InfoFormat("Cluster: {0} - Created successfully and is ready to use", cluster.Name);
+                Logger.InfoFormat("Cluster ConnectivityEndpoints:\r\n{0}",
+                    String.Join(Environment.NewLine, cluster.Properties.ConnectivityEndpoints.Select(c => c.ToDisplayString(false))));
             }
             return error;
         }
@@ -643,36 +663,37 @@ namespace HDInsightManagementCLI
         private static void ShowHelp()
         {
             var sb = new StringBuilder();
-            sb.AppendLine("-".PadRight(50, '-'));
+            sb.AppendLine(Environment.NewLine + "-".PadRight(50, '-'));
             sb.AppendLine("Microsoft HdInsight Management Tool Help");
             sb.AppendLine("-".PadRight(50, '-'));
             sb.AppendLine("You must provide one of the following as command line arg:");
-            sb.AppendLine("gsl - get supported locations for a subcription");
-            sb.AppendLine("gc - gets subcription capabilities like supported regions, versions, os types etc");
+            sb.AppendLine("c - creates a cluster");
+            sb.AppendLine("d - deletes the cluster");
             sb.AppendLine("l - list all the clusters for the specified subscription");
             sb.AppendLine("ls - list a specific cluster's details for the specified subscription and ClusterDnsName");
-            sb.AppendLine("lsrc - resume cluster creation monitoring (helpful to resume if you get timeout or lost track of the create)");
-            sb.AppendLine("lsrd - resume cluster deletion monitoring (helpful to resume if you get timeout or lost track of the delete)");
-            sb.AppendLine("c - create a cluster");
-            sb.AppendLine("d - delete the cluster");
+            sb.AppendLine("lsrc - resume cluster creation monitoring (helpful to resume if you get a timeout or lost track of the create)");
+            sb.AppendLine("lsrd - resume cluster deletion monitoring (helpful to resume if you get a timeout or lost track of the delete)");
+            sb.AppendLine("gsl - get supported locations for a subcription");
+            sb.AppendLine("gc - gets subcription capabilities like supported regions, versions, os types etc");
             sb.AppendLine(String.Format("dall - delete all the clusters based off on cutoff time. " + 
                 "Cutoff time is overridable using {0}", Config.ConfigName.DeleteCutoffPeriodInHours.ToString()));
             sb.AppendLine(String.Format("rdpon, rdponrdfe - enable rdp for a cluster. " + 
                 "RdpUsername, RdpPassword, RdpExpirationInDays are specified using {0}, {1}, {2}", 
                 Config.ConfigName.RdpUsername, Config.ConfigName.RdpPassword, Config.ConfigName.RdpExpirationInDays));
-            sb.AppendLine("Configuration Overrides - /{ConfigurationName}:{ConfigurationValue}");
-            sb.AppendLine("Optional parameters that override the configruation values specifced in the app.config");
+            sb.AppendLine("Configuration Overrides - Command Line arguments for configuration take precedence over App.config");
+            sb.AppendLine("Specifying a configuration override in commandline: /{ConfigurationName}:{ConfigurationValue}");
+            sb.AppendLine("Optional/Additional parameters that override the configuration values can be specified in the App.config");
             sb.AppendLine("Overridable Configuration Names:");
-            sb.AppendLine("\t{0}" + string.Join(Environment.NewLine + "\t", Enum.GetNames(typeof(Config.ConfigName))));
+            sb.AppendLine("\t" + string.Join(Environment.NewLine + "\t", Enum.GetNames(typeof(Config.ConfigName))));
             sb.AppendLine("-".PadRight(50, '-'));
             sb.AppendLine("Examples:");
             sb.AppendLine("HDInsightManagementCLI.exe c - Creates a cluster using the name specified in app.config or as command line overrides");
-            sb.AppendLine("HDInsightManagementCLI.exe c /CleanupOnError:yes - [USE AS DEFAULT] Creates a cluster and cleans up if an error was encountered");
+            sb.AppendLine("HDInsightManagementCLI.exe c /CleanupOnError:yes - Creates a cluster and cleans up if an error was encountered");
             sb.AppendLine("HDInsightManagementCLI.exe d - Deletes the cluster.");
             sb.AppendLine("HDInsightManagementCLI.exe l /SubscriptionId:<your-sub-id> - Gets the clusters for the specified subscription id");
             sb.AppendLine("HDInsightManagementCLI.exe gsl /SubscriptionId:<your-sub-id> - Gets the list of supported locations for the specified subscription id");
             sb.AppendLine("HDInsightManagementCLI.exe gc /SubscriptionId:<your-sub-id> - Gets the subscription capabilities");
-            sb.AppendLine("HDInsightManagementCLI.exe rdpon - Enables RDP for cluster. Default value for EnvironmentName is current");
+            sb.AppendLine("HDInsightManagementCLI.exe rdpon - Enables RDP for cluster (windows only)");
             Logger.Info(sb.ToString());
         }
     }

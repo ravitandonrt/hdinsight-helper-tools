@@ -1,13 +1,17 @@
 ﻿using log4net;
+using Microsoft.Azure.Management.HDInsight.Models;
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 
 namespace HDInsightManagementCLI
 {
@@ -183,6 +187,122 @@ namespace HDInsightManagementCLI
                         }
                         return string.Format("{0}: {1}", p.Name, displayString);
                     }));
+        }
+
+        public static KeyValuePair<string, string> GenerateSshKeyPair(string keyName, string keyPassword)
+        {
+            var privateKeyName = keyName + ".key";
+            if (File.Exists(privateKeyName))
+            {
+                throw new ApplicationException("A Private key already exists with same name, please move it before generating a new one. Name: " + privateKeyName);
+            }
+            Logger.InfoFormat("Generating a new Ssh key pair. Name: {0}, Passphrase: {1}", privateKeyName, keyPassword);
+            try
+            {
+                RunExecutable("ssh-keygen.exe", String.Format("-t rsa -C {0} -f {1} -N {2}", keyName, privateKeyName, keyPassword));
+            }
+            catch (Exception)
+            {
+                Logger.Error("Failed to generate keys, please make sure you are running this executable from Git shell as it uses the ssh-keygen.exe provided by Git." + 
+                    Environment.NewLine);
+                throw;
+            }
+            return new KeyValuePair<string, string>(privateKeyName + ".pub", privateKeyName);
+        }
+
+        /// <summary>
+        /// Blocking executable launch
+        /// </summary>
+        /// <param name="exePath"></param>
+        /// <param name="exeArgs"></param>
+        /// <param name="workingDir"></param>
+        public static void RunExecutable(string exePath, string exeArgs, string workingDir = null)
+        {
+            Logger.InfoFormat("Running executable - Path: {0}, Args: {1}, WorkingDir: {2}",
+                exePath, exeArgs, workingDir);
+
+            ProcessStartInfo startInfo = new ProcessStartInfo();
+            startInfo.CreateNoWindow = false;
+            startInfo.UseShellExecute = false;
+            startInfo.FileName = exePath;
+            startInfo.WindowStyle = ProcessWindowStyle.Hidden;
+            startInfo.Arguments = exeArgs;
+
+            if (!String.IsNullOrWhiteSpace(workingDir))
+            {
+                startInfo.WorkingDirectory = workingDir;
+            }
+
+            try
+            {
+                using (Process exeProcess = Process.Start(startInfo))
+                {
+                    exeProcess.WaitForExit();
+                    if (exeProcess.ExitCode != 0)
+                    {
+                        var message = String.Format("Executable returned non-zero exit code. Path: {0}, Code: {1}",
+                            exePath, exeProcess.ExitCode);
+                        throw new ApplicationException(message);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                var message = String.Format("Executable failed. Path: {0}, Args: {1}, WorkingDir: {2}",
+                    exePath, exeArgs, workingDir);
+                Logger.Error(message, ex);
+                throw new ApplicationException(message, ex);
+            }
+
+            Logger.InfoFormat("Executable run successfully - Path: {0}, Args: {1}, WorkingDir: {2}",
+                exePath, exeArgs, workingDir);
+        }
+
+        /// <summary>
+        /// Non blocking process launch
+        /// </summary>
+        /// <param name="exePath"></param>
+        /// <param name="exeArgs"></param>
+        /// <param name="workingDir"></param>
+        public static void LaunchProcess(string exePath, string exeArgs, string workingDir = null)
+        {
+            Logger.InfoFormat("Launch Process - Path: {0}, Args: {1}, WorkingDir: {2}",
+                exePath, exeArgs, workingDir);
+
+            ProcessStartInfo startInfo = new ProcessStartInfo();
+            startInfo.FileName = exePath;
+            startInfo.Arguments = exeArgs;
+
+            if (!String.IsNullOrWhiteSpace(workingDir))
+            {
+                startInfo.WorkingDirectory = workingDir;
+            }
+
+            try
+            {
+                Process exeProcess = Process.Start(startInfo);
+            }
+            catch (Exception ex)
+            {
+                var message = String.Format("Launch failed. Path: {0}, Args: {1}, WorkingDir: {2}",
+                    exePath, exeArgs, workingDir);
+                Logger.Error(message, ex);
+                throw new ApplicationException(message, ex);
+            }
+
+            Logger.InfoFormat("Process launched successfully - Path: {0}, Args: {1}, WorkingDir: {2}",
+                exePath, exeArgs, workingDir);
+        }
+
+        public static string GetUserClusterTablePrefix(Cluster cluster)
+        {
+            Regex alphaNumRgx = new Regex("[^a-zA-Z0-9]");
+            string sanitizedClusterName = alphaNumRgx.Replace(cluster.Name, string.Empty);
+            if (sanitizedClusterName.Length > 20)
+            {
+                sanitizedClusterName = sanitizedClusterName.Substring(0, 20);
+            }
+            return String.Format("u{0}{1}", sanitizedClusterName, cluster.Properties.CreatedDate.AddMinutes(1).ToString("ddMMMyyyyATHH")).ToLowerInvariant();
         }
     }
 }

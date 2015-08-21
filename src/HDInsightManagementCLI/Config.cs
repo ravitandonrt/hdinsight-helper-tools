@@ -5,6 +5,7 @@ using System.Configuration;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace HDInsightManagementCLI
 {
@@ -56,15 +57,16 @@ namespace HDInsightManagementCLI
             ResourceGroupName,
             ClusterLocation,
             ClusterDnsName,
-            ClusterDnsNameSuffix,
-            ClusterUserName,
-            ClusterPassword,
             ClusterSize,
+            ClusterUsername,
+            ClusterPassword,
+            SshUsername,
+            SshPassword,
+            SshPublicKeyFilePath,
             HDInsightVersion,
             WasbNames,
             WasbKeys,
             WasbContainers,
-            HiveQuery,
             SqlAzureAsMetastore,
             SqlHiveMetastoreServer,
             SqlHiveMetastoreDatabase,
@@ -80,13 +82,10 @@ namespace HDInsightManagementCLI
             CleanupOnError,
             SilentMode,
             BuildLabMode,
-            SubscriptionIdsSafeList,
-            DnsNamesSafeList,
-            EnvironmentName,
+            AutoEnableRdp,
             RdpUsername,
             RdpPassword,
             RdpExpirationInDays,
-            AutoEnableRdp,
             ClusterType,
             OperatingSystemType
         }
@@ -260,26 +259,87 @@ namespace HDInsightManagementCLI
             }
         }
 
-        public string ClusterUserName
+        public string ClusterUsername
         {
             get
             {
                 string returnValue = null;
-                bool result = TryGetConfigurationValue(ConfigName.ClusterUserName, out returnValue);
+                bool result = TryGetConfigurationValue(ConfigName.ClusterUsername, out returnValue);
                 if (!result)
                 {
-                    returnValue = "hdinsightuser";
+                    returnValue = "admin";
                 }
                 return returnValue;
             }
         }
 
+        private string _clusterPassword = null;
         public string ClusterPassword
         {
             get
             {
+                if (string.IsNullOrWhiteSpace(_clusterPassword))
+                {
+                    bool result = TryGetConfigurationValue(ConfigName.ClusterPassword, out _clusterPassword);
+                    if (!result)
+                    {
+                        Logger.InfoFormat("Generating random cluster password of length 24 using System.Web.Security.Membership.GeneratePassword");
+                        do
+                        {
+                            _clusterPassword = System.Web.Security.Membership.GeneratePassword(24, 2);
+                        }
+                        while (!Regex.IsMatch(_clusterPassword, HDInsightManagementCLIHelpers.HDInsightPasswordValidationRegex));
+                        Logger.InfoFormat("PLEASE NOTE: New cluster password: {0}", _clusterPassword);
+                        Logger.InfoFormat("If the cluster was created previously you should use the previously generated password instead.");
+                        SaveConfigurationValue(ConfigName.ClusterPassword, _clusterPassword);
+                    }
+                }
+                return _clusterPassword;
+            }
+            set
+            {
+                _clusterPassword = value;
+            }
+        }
+
+        public string SshUsername
+        {
+            get
+            {
                 string returnValue = null;
-                bool result = TryGetConfigurationValue(ConfigName.ClusterPassword, out returnValue);
+                bool result = TryGetConfigurationValue(ConfigName.SshUsername, out returnValue);
+                if (!result)
+                {
+                    returnValue = "ssh" + ClusterUsername;
+                }
+                return returnValue;
+            }
+        }
+
+        public string SshPassword
+        {
+            get
+            {
+                string returnValue = null;
+                bool result = TryGetConfigurationValue(ConfigName.SshPassword, out returnValue);
+                return returnValue;
+            }
+        }
+
+        public string SshPublicKeyFilePath
+        {
+            get
+            {
+                string returnValue = null;
+                bool result = TryGetConfigurationValue(ConfigName.SshPublicKeyFilePath, out returnValue);
+                if(!result)
+                {
+                    var keyPair = HDInsightManagementCLIHelpers.GenerateSshKeyPair(ClusterDnsName, ClusterPassword);
+                    Logger.InfoFormat("PLEASE NOTE: A new SSH key pair was generated. Public Key Path: {0}, Private Key Path: {1}", keyPair.Key, keyPair.Value);
+                    Logger.InfoFormat("This new key path will saved in your application configuration, the passphrase is same as your cluster password.");
+                    returnValue = keyPair.Key;
+                    SaveConfigurationValue(ConfigName.SshPublicKeyFilePath, returnValue);
+                }
                 return returnValue;
             }
         }
@@ -528,7 +588,16 @@ namespace HDInsightManagementCLI
 
         public string RdpUsername
         {
-            get { return GetConfigurationValue(ConfigName.RdpUsername); }
+            get
+            {
+                string returnValue = null;
+                bool result = TryGetConfigurationValue(ConfigName.RdpUsername, out returnValue);
+                if (!result)
+                {
+                    returnValue = "rdp" + ClusterUsername;
+                }
+                return returnValue;
+            }
         }
 
         public string RdpPassword
@@ -536,15 +605,13 @@ namespace HDInsightManagementCLI
             get
             {
                 string returnValue = null;
-                bool result = TryGetConfigurationValue(ConfigName.ClusterPassword, out returnValue);
-                if (result)
+                bool result = TryGetConfigurationValue(ConfigName.RdpPassword, out returnValue);
+                if (!result)
                 {
-                    return returnValue;
+                    returnValue = ClusterPassword;
+                    SaveConfigurationValue(ConfigName.RdpPassword, returnValue);
                 }
-                else
-                {
-                    return ClusterPassword;
-                }
+                return returnValue;
             }
         }
 
@@ -616,6 +683,19 @@ namespace HDInsightManagementCLI
             }
         }
 
+        private void SaveConfigurationValue(ConfigName configName, string value)
+        {
+            Configuration config = ConfigurationManager.OpenExeConfiguration(ConfigurationUserLevel.None);
+            KeyValueConfigurationCollection settings = config.AppSettings.Settings;
+
+            settings[configName.ToString()].Value = value;
+
+            Logger.InfoFormat("Saving application configuration - Key: {0}, Value: {1}", configName.ToString(), value);
+            config.Save(ConfigurationSaveMode.Modified);
+            
+            ConfigurationManager.RefreshSection(config.AppSettings.SectionInformation.Name);
+        }
+
         public void PrintRunConfiguration()
         {
             if (this.SilentMode)
@@ -625,7 +705,7 @@ namespace HDInsightManagementCLI
 
             var sb = new StringBuilder();
 
-            sb.AppendLine(Environment.NewLine + "==================== Current Run Configuration ====================");
+            sb.AppendLine(Environment.NewLine + "====================Current Run Configuration====================");
             foreach (ConfigName configPropertyName in Enum.GetValues(typeof(ConfigName)))
             {
                 string configValue;
