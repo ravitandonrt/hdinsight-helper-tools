@@ -102,7 +102,7 @@ namespace HDInsightManagementCLI
                             var cluster = hdInsightManagementClient.Clusters.Get(config.ResourceGroupName, config.ClusterDnsName).Cluster;
                             Logger.InfoFormat(ClusterToString(cluster));
 
-                            Logger.InfoFormat(cluster.Properties.ClusterDefinition.Configurations);
+                            Logger.InfoFormat("Cluster Configurations:\r\n{0}", GetClusterConfigurations());
                             break;
                         }
                     case "lsrc":
@@ -134,6 +134,7 @@ namespace HDInsightManagementCLI
                             Create(config.SubscriptionId, config.ResourceGroupName, config.ClusterDnsName, config.ClusterLocation, config.WasbAccounts,
                                 config.ClusterSize, config.ClusterUsername, config.ClusterPassword, config.HDInsightVersion,
                                 config.SqlAzureMetastores, config.ClusterType, config.OSType);
+
                             break;
                         }
                     case "rs":
@@ -289,6 +290,38 @@ namespace HDInsightManagementCLI
             }
 
             return 0;
+        }
+
+        private static string GetClusterConfigurations(List<string> clusterConfigurationNames = null)
+        {
+            var sb = new StringBuilder();
+            if (clusterConfigurationNames == null || clusterConfigurationNames.Count == 0)
+            {
+                clusterConfigurationNames = new List<string>() { "core-site" };
+                //"hdfs-site", "hive-site", "mapred-site", "oozie-site", "yarn-site", "hbase-site", "storm-site"
+            }
+
+            foreach (var clusterConfigurationName in clusterConfigurationNames)
+            {
+                sb.AppendFormat(GetClusterConfiguration(clusterConfigurationName));
+            }
+            return sb.ToString();
+        }
+
+        private static string GetClusterConfiguration(string clusterConfigurationName)
+        {
+            var sb = new StringBuilder();
+            var clusterConfigurations = hdInsightManagementClient.Clusters.GetClusterConfigurations(
+                config.ResourceGroupName, config.ClusterDnsName, clusterConfigurationName);
+
+            if (clusterConfigurations.Configuration.Count > 0)
+            {
+                sb.AppendFormat("\t{0}:\r\n\t\t{1}\r\n",
+                    clusterConfigurationName,
+                    String.Join(Environment.NewLine + "\t\t", clusterConfigurations.Configuration.Select(
+                    c => c.Key + ": " + c.Value)));
+            }
+            return sb.ToString();
         }
 
         private static string ClusterToString(Cluster cluster)
