@@ -8,17 +8,19 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Linq.Expressions;
+using System.Net.Http;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace HDInsightManagementCLI
 {
     public static class HDInsightManagementCLIHelpers
     {
-        private static readonly ILog Logger = LogManager.GetLogger(typeof(HDInsightManagementCLI));
+        private static readonly ILog Logger = LogManager.GetLogger(typeof(HDInsightManagementCLIHelpers));
         /// <summary>
         /// Regex to validate cluster user password.
         /// Checks for following
@@ -211,7 +213,8 @@ namespace HDInsightManagementCLI
             }
             catch (Exception)
             {
-                Logger.Error("Failed to generate keys, please make sure you are running this executable from Git shell as it uses the ssh-keygen.exe provided by Git." + 
+                Logger.Error("Failed to generate keys, please make sure you are running this executable from Git shell as it uses the ssh-keygen.exe provided by Git. " +
+                    "Alternatively you may place ssh-keygen.exe from PortableGit in the current execution directory." + 
                     Environment.NewLine);
                 throw;
             }
@@ -311,6 +314,50 @@ namespace HDInsightManagementCLI
                 sanitizedClusterName = sanitizedClusterName.Substring(0, 20);
             }
             return String.Format("u{0}{1}", sanitizedClusterName, cluster.Properties.CreatedDate.AddMinutes(1).ToString("ddMMMyyyyATHH")).ToLowerInvariant();
+        }
+    }
+
+    public class AzureResourceProviderHandler : DelegatingHandler
+    {
+        private static readonly ILog Logger = LogManager.GetLogger(typeof(AzureResourceProviderHandler));
+
+        public string AzureResourceProviderNamespace {get; set;}
+
+        public const string HDInsightResourceProviderNamespace = "Microsoft.HDInsight";
+        public AzureResourceProviderHandler(string resourceProviderNamespace)
+        {
+            this.AzureResourceProviderNamespace = resourceProviderNamespace;
+            InnerHandler = new HttpClientHandler();
+            Logger.InfoFormat("AzureResourceProviderHandler initialized with ResourceProviderNamespace: {0}", this.AzureResourceProviderNamespace);
+        }
+
+        protected override System.Threading.Tasks.Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var originalRequestUri = request.RequestUri;
+
+            Logger.InfoFormat("Request Uri: {0}", originalRequestUri);
+
+            var newRequestUri =
+                new Uri(originalRequestUri.AbsoluteUri.Replace(
+                    string.Format("/{0}/", HDInsightResourceProviderNamespace),
+                    string.Format("/{0}/", AzureResourceProviderNamespace)));
+            request.RequestUri = newRequestUri;
+
+            Logger.InfoFormat("Request Uri (NEW): {0}", newRequestUri);
+
+            if (request.Content != null)
+            {
+                string s = request.Content.ReadAsStringAsync().Result;
+                Logger.InfoFormat("Request Content:\r\n{0}", s);
+            }
+
+            return base.SendAsync(request, cancellationToken).ContinueWith(task =>
+            {
+                var response = task.Result;
+                Logger.InfoFormat("Response Status code: {0} ", response.StatusCode);
+                Logger.InfoFormat("Response content: {0}", response.Content.ReadAsStringAsync().Result);
+                return response;
+            });
         }
     }
 }

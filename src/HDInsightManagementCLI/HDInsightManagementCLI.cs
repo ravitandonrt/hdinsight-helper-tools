@@ -11,6 +11,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -64,15 +66,44 @@ namespace HDInsightManagementCLI
                 }
 
                 Logger.InfoFormat("Getting Azure ActiveDirectory Token from {0}", config.AzureActiveDirectoryUri);
+
+                AuthenticationResult token = null;
                 AuthenticationContext ac = new AuthenticationContext(config.AzureActiveDirectoryUri + config.AzureActiveDirectoryTenantId, true);
-                var token = ac.AcquireToken(config.AzureManagementUri, config.AzureActiveDirectoryClientId,
-                    new Uri(config.AzureActiveDirectoryRedirectUri), PromptBehavior.Auto);
+
+                var promptBehavior = PromptBehavior.Auto;
+
+                while (token == null)
+                {
+                    try
+                    {
+                        Logger.DebugFormat("Acquring token from {0} with behavior: {1}", config.AzureActiveDirectoryUri + config.AzureActiveDirectoryTenantId, promptBehavior);
+                        token = ac.AcquireToken(config.AzureManagementUri, config.AzureActiveDirectoryClientId,
+                            new Uri(config.AzureActiveDirectoryRedirectUri), promptBehavior);
+                    }
+                    catch(Exception ex)
+                    {
+                        Logger.ErrorFormat("An error occurred while acquiring token from Azure Active Directory, will retry. Exception:\r\n{0}", ex.ToString());
+                        promptBehavior = PromptBehavior.RefreshSession;
+                    }
+                }
 
                 Logger.InfoFormat("Acquired Azure ActiveDirectory Token for User: {0} with Expiry: {1}", token.UserInfo.GivenName, token.ExpiresOn);
                 tokenCloudCredentials = new TokenCloudCredentials(config.SubscriptionId, token.AccessToken);
 
                 Logger.InfoFormat("Connecting to AzureResourceManagementUri endpoint at {0}", config.AzureResourceManagementUri);
-                hdInsightManagementClient = new HDInsightManagementClient(tokenCloudCredentials, new Uri(config.AzureResourceManagementUri));
+
+
+                HttpClient azureResourceProviderHandlerHttpClient = null;
+                if (!AzureResourceProviderHandler.HDInsightResourceProviderNamespace.Equals(config.AzureResourceProviderNamespace, StringComparison.OrdinalIgnoreCase))
+                {
+                    azureResourceProviderHandlerHttpClient = new HttpClient(new AzureResourceProviderHandler(config.AzureResourceProviderNamespace));
+                    hdInsightManagementClient = new HDInsightManagementClient(tokenCloudCredentials,
+                        new Uri(config.AzureResourceManagementUri), azureResourceProviderHandlerHttpClient);
+                }
+                else
+                {
+                    hdInsightManagementClient = new HDInsightManagementClient(tokenCloudCredentials, new Uri(config.AzureResourceManagementUri));
+                }
 
                 pollInterval = TimeSpan.FromSeconds(config.OperationPollIntervalInSeconds);
                 timeout = TimeSpan.FromMinutes(config.TimeoutPeriodInMinutes);
@@ -123,7 +154,7 @@ namespace HDInsightManagementCLI
                     case "c":
                     case "create":
                         {
-                            foreach (var asv in config.WasbAccounts)
+                            foreach (var asv in config.AdditionalStorageAccounts)
                             {
                                 if (!asv.Name.EndsWith(".net", StringComparison.OrdinalIgnoreCase))
                                     Logger.InfoFormat("WARNING - ASV AccountName: {0} does not seem to have a valid FQDN. " +
@@ -131,16 +162,24 @@ namespace HDInsightManagementCLI
                                         asv.Name);
                             }
 
-                            Create(config.SubscriptionId, config.ResourceGroupName, config.ClusterDnsName, config.ClusterLocation, config.WasbAccounts,
-                                config.ClusterSize, config.ClusterUsername, config.ClusterPassword, config.HDInsightVersion,
-                                config.SqlAzureMetastores, config.ClusterType, config.OSType);
+                            CreateResourceGroup(config.AzureResourceManagementUri, 
+                                config.AzureResourceProviderNamespace, 
+                                config.ResourceGroupName, config.ClusterLocation);
+
+                            Create(config.SubscriptionId, config.ResourceGroupName, config.ClusterDnsName, config.ClusterLocation, 
+                                config.DefaultStorageAccount, config.ClusterSize, 
+                                config.ClusterUsername, config.ClusterPassword, config.HDInsightVersion,
+                                config.ClusterType, config.OSType,
+                                config.AdditionalStorageAccounts, config.SqlAzureMetastores,
+                                config.VirtualNetworkId, config.SubnetName,
+                                config.HeadNodeSize, config.WorkerNodeSize, config.ZookeeperSize);
 
                             break;
                         }
                     case "rs":
                     case "resize":
                         {
-                            Resize(config.ClusterDnsName, config.ClusterLocation, config.ClusterSize);
+                            Resize(config.ResourceGroupName, config.ClusterDnsName, config.ClusterSize);
                             break;
                         }
                     case "rdpon":
@@ -415,52 +454,67 @@ namespace HDInsightManagementCLI
                     String.Join(Environment.NewLine + "\t\t", c.Value.AvailableVmSizes))));
         }
 
-        static void CreateResourceGroup(string azureResourceManagementUri, string resourceGroupName, string location)
+        static void CreateResourceGroup(string azureResourceManagementUri, string azureResourceProviderNamespace, string resourceGroupName, string location)
         {
+            Logger.InfoFormat("Creating Resource Group and registering provider - " + 
+                "ARM Uri: {0}, ResourceProvider: {1}, ResourceGroupName: {2}, Location: {3}",
+                azureResourceManagementUri, azureResourceProviderNamespace, resourceGroupName, location);
+
             var resourceClient = new ResourceManagementClient(tokenCloudCredentials, new Uri(azureResourceManagementUri));
             resourceClient.ResourceGroups.CreateOrUpdate(
                 resourceGroupName,
                 new ResourceGroup
                 {
-                    Location = location,
+                    Location = location
                 });
 
-            resourceClient.Providers.Register("Microsoft.HDInsight");
+            resourceClient.Providers.Register(azureResourceProviderNamespace);
         }
 
         static void Create(string subscriptionId, string resourceGroupName, string clusterDnsName, string clusterLocation,
-            List<AzureStorageConfig> asvAccounts, int clusterSize, string clusterUsername, string clusterPassword,
-            string hdInsightVersion, List<SqlAzureConfig> sqlAzureMetaStores,
-            ClusterType clusterType, OperatingSystemType osType)
+            AzureStorageConfig defaultStorageAccount, int clusterSize, string clusterUsername, string clusterPassword,
+            string hdInsightVersion,
+            string clusterType, string osType,
+            List<AzureStorageConfig> additionalStorageAccounts,
+            List<SqlAzureConfig> sqlAzureMetaStores,
+            string virtualNetworkId = null, string subnetName = null,
+            string headNodeSize = null, string workerNodeSize = null, string zookeeperSize = null)
         {
             Logger.InfoFormat("ResourceGroup: {0}, Cluster: {1} - Submitting a new cluster deployment request", resourceGroupName, clusterDnsName);
 
             var clusterCreateParameters = new ClusterCreateParameters()
                 {
                     ClusterSizeInNodes = clusterSize,
-                    ClusterType = (HDInsightClusterType)Enum.Parse(typeof(HDInsightClusterType), clusterType.ToString()),
-                    DefaultStorageAccountKey = asvAccounts[0].Key,
-                    DefaultStorageAccountName = asvAccounts[0].Name,
-                    DefaultStorageContainer = asvAccounts[0].Container,
+                    ClusterType = clusterType,
+                    DefaultStorageAccountName = defaultStorageAccount.Name,
+                    DefaultStorageAccountKey = defaultStorageAccount.Key,
+                    DefaultStorageContainer = defaultStorageAccount.Container,
                     Location = clusterLocation,
                     Password = clusterPassword,
                     UserName = clusterUsername,
                     Version = hdInsightVersion,
                     OSType = (OSType)Enum.Parse(typeof(OSType), osType.ToString()),
+                    HeadNodeSize = headNodeSize,
+                    WorkerNodeSize = workerNodeSize,
+                    ZookeeperNodeSize = zookeeperSize
                 };
 
             if (clusterCreateParameters.OSType == OSType.Linux)
             {
                 clusterCreateParameters.SshUserName = config.SshUsername;
-                if (String.IsNullOrWhiteSpace(config.SshPassword))
+                if(!String.IsNullOrWhiteSpace(config.SshPassword))
+                {
+                    clusterCreateParameters.SshPassword = config.SshPassword;
+                }
+                else if(File.Exists(config.SshPublicKeyFilePath))
                 {
                     var publicKey = File.ReadAllText(config.SshPublicKeyFilePath);
                     Logger.Debug("SSH RSA Public Key: " + Environment.NewLine + publicKey + Environment.NewLine);
                     clusterCreateParameters.SshPublicKey = publicKey;
                 }
-                else
+                else if (String.IsNullOrWhiteSpace(config.SshPassword))
                 {
-                    clusterCreateParameters.SshPassword = config.SshPassword;
+                    clusterCreateParameters.SshPassword = config.ClusterPassword;
                 }
             }
             else
@@ -471,6 +525,18 @@ namespace HDInsightManagementCLI
                     clusterCreateParameters.RdpPassword = config.RdpPassword;
                     clusterCreateParameters.RdpAccessExpiry = DateTime.Now.AddDays(int.Parse(config.RdpExpirationInDays));
                 }
+            }
+
+            foreach (var additionalStorageAccount in additionalStorageAccounts)
+            {
+                clusterCreateParameters.AdditionalStorageAccounts.Add(additionalStorageAccount.Name, additionalStorageAccount.Key);
+            }
+
+
+            if (!String.IsNullOrEmpty(virtualNetworkId) && !String.IsNullOrEmpty(subnetName))
+            {
+                clusterCreateParameters.VirtualNetworkId = virtualNetworkId;
+                clusterCreateParameters.SubnetName = subnetName;
             }
 
             if (sqlAzureMetaStores != null && sqlAzureMetaStores.Count > 0)
@@ -528,13 +594,16 @@ namespace HDInsightManagementCLI
             var localStopWatch = Stopwatch.StartNew();
             do
             {
-                Logger.InfoFormat("Cluster: {0} - Create Task Id: {1}, Task Status: {2}, Time: {3:0.00} secs",
-                    ClusterDnsName, createTask.Id, createTask.Status, localStopWatch.Elapsed.TotalSeconds);
-                
-                if (createTask != null && (createTask.IsFaulted || createTask.IsCanceled))
+                if (createTask != null)
                 {
-                    error = true;
-                    break;
+                    Logger.InfoFormat("Cluster: {0} - Create Task Id: {1}, Task Status: {2}, Time: {3:0.00} secs",
+                        ClusterDnsName, createTask.Id, createTask.Status, localStopWatch.Elapsed.TotalSeconds);
+
+                    if (createTask.IsFaulted || createTask.IsCanceled)
+                    {
+                        error = true;
+                        break;
+                    }
                 }
 
                 try
@@ -673,15 +742,13 @@ namespace HDInsightManagementCLI
             catch (Exception ex)
             {
                 Logger.InfoFormat(ex.ToString());
-                Logger.InfoFormat("Cluster: {0} - Not found. Delete Successful.", ClusterDnsName);
-                if (!config.SilentMode)
+                if (ex is CloudException && ((CloudException)ex).Error.Code.Equals("ResourceNotFound", StringComparison.OrdinalIgnoreCase))
                 {
-                    var clusters = hdInsightManagementClient.Clusters.List().Clusters;
-                    if (clusters.Count > 0)
-                    {
-                        Logger.InfoFormat(String.Format(Environment.NewLine + "SubscriptionId: {0} - There are still {1} clusters in this subscription. To list all of them use 'l' command ",
-                            hdInsightManagementClient.Credentials.SubscriptionId, clusters.Count));
-                    }
+                    Logger.InfoFormat("Cluster: {0} - Not found. Delete Successful.", ClusterDnsName);
+                }
+                else
+                {
+                    Logger.InfoFormat("Cluster: {0} - Delete Unsuccessful.", ClusterDnsName);
                 }
             }
 
@@ -697,7 +764,7 @@ namespace HDInsightManagementCLI
         {
             var sb = new StringBuilder();
             sb.AppendLine(Environment.NewLine + "-".PadRight(50, '-'));
-            sb.AppendLine("Microsoft HdInsight Management Tool Help");
+            sb.AppendLine("Microsoft HDInsight Management Tool Help");
             sb.AppendLine("-".PadRight(50, '-'));
             sb.AppendLine("You must provide one of the following as command line arg:");
             sb.AppendLine("c - creates a cluster");

@@ -9,20 +9,6 @@ using System.Text.RegularExpressions;
 
 namespace HDInsightManagementCLI
 {
-    public enum ClusterType
-    {
-        Hadoop,
-        HBase,
-        Storm,
-        Spark
-    }
-
-    public enum OperatingSystemType
-    {
-        Linux,
-        Windows
-    }
-
     public class AzureStorageConfig
     {
         public string Name { get; set; }
@@ -47,12 +33,11 @@ namespace HDInsightManagementCLI
         {
             AzureManagementUri,
             AzureResourceManagementUri,
+            AzureResourceProviderNamespace,
             AzureActiveDirectoryUri,
             AzureActiveDirectoryRedirectUri,
             AzureActiveDirectoryTenantId,
             AzureActiveDirectoryClientId,
-            AzureManagementCertificateName,
-            AzureManagementCertificatePassword,
             SubscriptionId,
             ResourceGroupName,
             ClusterLocation,
@@ -64,9 +49,11 @@ namespace HDInsightManagementCLI
             SshPassword,
             SshPublicKeyFilePath,
             HDInsightVersion,
-            WasbNames,
-            WasbKeys,
-            WasbContainers,
+            DefaultStorageAccountName,
+            DefaultStorageAccountKey,
+            DefaultStorageAccountContainer,
+            AdditionalStorageAccountNames,
+            AdditionalStorageAccountKeys,
             SqlAzureAsMetastore,
             SqlHiveMetastoreServer,
             SqlHiveMetastoreDatabase,
@@ -81,13 +68,17 @@ namespace HDInsightManagementCLI
             DeleteCutoffPeriodInHours,
             CleanupOnError,
             SilentMode,
-            BuildLabMode,
             AutoEnableRdp,
             RdpUsername,
             RdpPassword,
             RdpExpirationInDays,
             ClusterType,
-            OperatingSystemType
+            OperatingSystemType,
+            HeadNodeSize,
+            WorkerNodeSize,
+            ZookeeperSize,
+            VirtualNetworkId,
+            SubnetName,
         }
 
         private readonly Dictionary<ConfigName, string> _overrides =
@@ -130,6 +121,11 @@ namespace HDInsightManagementCLI
             get { return GetConfigurationValue(ConfigName.AzureResourceManagementUri); }
         }
 
+        public string AzureResourceProviderNamespace
+        {
+            get { return GetConfigurationValue(ConfigName.AzureResourceProviderNamespace); }
+        }
+        
         public string AzureActiveDirectoryUri
         {
             get { return GetConfigurationValue(ConfigName.AzureActiveDirectoryUri); }
@@ -150,43 +146,19 @@ namespace HDInsightManagementCLI
             get { return GetConfigurationValue(ConfigName.AzureActiveDirectoryClientId); }
         }
 
-        public ClusterType ClusterType
+        public string ClusterType
         {
             get
             {
-                ClusterType retval;
-                string clusterTypeStr;
-                if (!TryGetConfigurationValue(ConfigName.ClusterType, out clusterTypeStr))
-                {
-                    clusterTypeStr = "Hadoop";
-                }
-
-                if (!Enum.TryParse(clusterTypeStr, true, out retval))
-                {
-                    retval = ClusterType.Hadoop;
-                }
-
-                return retval;
+                return GetConfigurationValue(ConfigName.ClusterType);
             }
         }
 
-        public OperatingSystemType OSType
+        public string OSType
         {
             get
             {
-                OperatingSystemType retval;
-                string operatingSystemType;
-                if (!TryGetConfigurationValue(ConfigName.OperatingSystemType, out operatingSystemType))
-                {
-                    operatingSystemType = "Windows";
-                }
-
-                if (!Enum.TryParse(operatingSystemType, true, out retval))
-                {
-                    retval = OperatingSystemType.Windows;
-                }
-
-                return retval;
+                return GetConfigurationValue(ConfigName.OperatingSystemType);
             }
         }
 
@@ -335,7 +307,7 @@ namespace HDInsightManagementCLI
                 if(!result)
                 {
                     var keyPair = HDInsightManagementCLIHelpers.GenerateSshKeyPair(ClusterDnsName, ClusterPassword);
-                    Logger.InfoFormat("PLEASE NOTE: A new SSH key pair was generated. Public Key Path: {0}, Private Key Path: {1}", keyPair.Key, keyPair.Value);
+                    Logger.InfoFormat("PLEASE NOTE: A new SSH key pair was generated. Public Key Path: {0}, Private Key Path: {1}, Passphrase: {2}", keyPair.Key, keyPair.Value, ClusterPassword);
                     Logger.InfoFormat("This new key path will saved in your application configuration, the passphrase is same as your cluster password.");
                     returnValue = keyPair.Key;
                     SaveConfigurationValue(ConfigName.SshPublicKeyFilePath, returnValue);
@@ -378,68 +350,70 @@ namespace HDInsightManagementCLI
             }
         }
 
-        public AzureStorageConfig DefaultWasbAccount
+        private AzureStorageConfig _defaultStorageAccount;
+        public AzureStorageConfig DefaultStorageAccount
         {
             get
             {
-                return WasbAccounts.First();
-            }
-        }
-
-        private List<AzureStorageConfig> _wasbAccounts = null;
-        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Design", "CA1065:DoNotRaiseExceptionsInUnexpectedLocations")]
-        public List<AzureStorageConfig> WasbAccounts
-        {
-            get
-            {
-                if (_wasbAccounts == null)
+                if(_defaultStorageAccount == null)
                 {
-                    _wasbAccounts = new List<AzureStorageConfig>();
-
-                    var wasbNames = GetConfigurationValue(ConfigName.WasbNames).Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
-                    var wasbKeys = GetConfigurationValue(ConfigName.WasbKeys).Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
-
-                    if (wasbNames.Count() != wasbKeys.Count())
+                    _defaultStorageAccount = new AzureStorageConfig()
                     {
-                        throw new ApplicationException(
-                            String.Format("WasbNames.Count: {0} is not equal to WasbKeys.Count: {1}",
-                                          wasbNames.Count(), wasbKeys.Count()));
-                    }
+                        Name = GetConfigurationValue(ConfigName.DefaultStorageAccountName),
+                        Key = GetConfigurationValue(ConfigName.DefaultStorageAccountKey)
+                    };
 
-                    var storageContainerNamesValue = GetConfigurationValue(ConfigName.WasbContainers);
-                    var storageContainerNames = storageContainerNamesValue.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
-
-                    bool containerAutoName = String.Compare(storageContainerNamesValue, "auto", StringComparison.OrdinalIgnoreCase) == 0;
-
-                    if (!containerAutoName)
+                    string container = null;
+                    var result = TryGetConfigurationValue(ConfigName.DefaultStorageAccountContainer, out container);
+                    if(result && !String.IsNullOrEmpty(container))
                     {
-                        if (wasbNames.Count() != storageContainerNames.Count())
-                        {
-                            throw new ApplicationException(
-                                String.Format(
-                                    "WasbNames.Count: {0} is not equal to WasbContainers.Count: {1}",
-                                    wasbNames.Count(), storageContainerNames.Count()));
-                        }
-                    }
-
-                    for (int i = 0; i < wasbNames.Count(); i++)
-                    {
-                        var wasbAccount = new AzureStorageConfig()
-                        {
-                            Name = wasbNames[i],
-                            Key = wasbKeys[i]
-                        };
-
-                        wasbAccount.Container = containerAutoName ? ClusterDnsName.ToLowerInvariant() : storageContainerNames[i].ToLowerInvariant();
-
-                        _wasbAccounts.Add(wasbAccount);
+                        _defaultStorageAccount.Container = container;
                     }
                 }
-                return _wasbAccounts;
+                return _defaultStorageAccount;
             }
             set
             {
-                _wasbAccounts = value;
+                _defaultStorageAccount = value;
+            }
+        }
+
+        private List<AzureStorageConfig> _additionalStorageAccounts = null;
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Design", "CA1065:DoNotRaiseExceptionsInUnexpectedLocations")]
+        public List<AzureStorageConfig> AdditionalStorageAccounts
+        {
+            get
+            {
+                if (_additionalStorageAccounts == null)
+                {
+                    _additionalStorageAccounts = new List<AzureStorageConfig>();
+
+                    var additionalStorageAccountNames = GetConfigurationValue(ConfigName.AdditionalStorageAccountNames).Split(new char[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries);
+                    var additionalStorageAccountKeys = GetConfigurationValue(ConfigName.AdditionalStorageAccountKeys).Split(new char[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries);
+
+                    if (additionalStorageAccountNames.Count() != additionalStorageAccountKeys.Count())
+                    {
+                        throw new ApplicationException(
+                            String.Format("AdditionalStorageAccountNames.Count: {0} is not equal to AdditionalStorageAccountKeys.Count: {1}",
+                                          additionalStorageAccountNames.Count(), additionalStorageAccountKeys.Count()));
+                    }
+
+                    for (int i = 0; i < additionalStorageAccountNames.Count(); i++)
+                    {
+                        var additionalStorageAccount = new AzureStorageConfig()
+                        {
+                            Name = additionalStorageAccountNames[i],
+                            Key = additionalStorageAccountKeys[i]
+                        };
+
+                        _additionalStorageAccounts.Add(additionalStorageAccount);
+                    }
+                }
+                return _additionalStorageAccounts;
+            }
+            set
+            {
+                _additionalStorageAccounts = value;
             }
         }
 
@@ -482,6 +456,31 @@ namespace HDInsightManagementCLI
             }
         }
 
+        public string HeadNodeSize
+        {
+            get { return GetConfigurationValue(ConfigName.HeadNodeSize); }
+        }
+
+        public string WorkerNodeSize
+        {
+            get { return GetConfigurationValue(ConfigName.WorkerNodeSize); }
+        }
+
+        public string ZookeeperSize
+        {
+            get { return GetConfigurationValue(ConfigName.ZookeeperSize); }
+        }
+
+        public string VirtualNetworkId
+        {
+            get { return GetConfigurationValue(ConfigName.VirtualNetworkId); }
+        }
+
+        public string SubnetName
+        {
+            get { return GetConfigurationValue(ConfigName.SubnetName); }
+        }
+
         public int OperationPollIntervalInSeconds
         {
             get
@@ -506,7 +505,7 @@ namespace HDInsightManagementCLI
         {
             get
             {
-                int defaultValue = 30;
+                int defaultValue = 60;
                 int returnValue = defaultValue;
                 string outValue = null;
                 bool result = TryGetConfigurationValue(ConfigName.TimeoutPeriodInMinutes, out outValue);
