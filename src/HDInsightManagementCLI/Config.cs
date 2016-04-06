@@ -274,27 +274,33 @@ namespace HDInsightManagementCLI
             }
         }
 
+        private string _sshUsername;
         public string SshUsername
         {
             get
             {
-                string returnValue = null;
-                bool result = TryGetConfigurationValue(ConfigName.SshUsername, out returnValue);
-                if (!result)
+                if (_sshUsername == null)
                 {
-                    returnValue = "ssh" + ClusterUsername;
+                    bool result = TryGetConfigurationValue(ConfigName.SshUsername, out _sshUsername);
+                    if (!result)
+                    {
+                        _sshUsername = "ssh" + ClusterUsername;
+                    }
                 }
-                return returnValue;
+                return _sshUsername;
             }
         }
 
+        private string _sshPassword;
         public string SshPassword
         {
             get
             {
-                string returnValue = null;
-                bool result = TryGetConfigurationValue(ConfigName.SshPassword, out returnValue);
-                return returnValue;
+                if (_sshPassword == null)
+                {
+                    bool result = TryGetConfigurationValue(ConfigName.SshPassword, out _sshPassword);
+                }
+                return _sshPassword;
             }
         }
 
@@ -388,25 +394,31 @@ namespace HDInsightManagementCLI
                 {
                     _additionalStorageAccounts = new List<AzureStorageConfig>();
 
-                    var additionalStorageAccountNames = GetConfigurationValue(ConfigName.AdditionalStorageAccountNames).Split(new char[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries);
-                    var additionalStorageAccountKeys = GetConfigurationValue(ConfigName.AdditionalStorageAccountKeys).Split(new char[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries);
-
-                    if (additionalStorageAccountNames.Count() != additionalStorageAccountKeys.Count())
+                    string additionalStorageAccountNamesValue;
+                    string additionalStorageAccountKeysValue;
+                    if (TryGetConfigurationValue(ConfigName.AdditionalStorageAccountNames, out additionalStorageAccountNamesValue) &&
+                        TryGetConfigurationValue(ConfigName.AdditionalStorageAccountKeys, out additionalStorageAccountKeysValue))
                     {
-                        throw new ApplicationException(
-                            String.Format("AdditionalStorageAccountNames.Count: {0} is not equal to AdditionalStorageAccountKeys.Count: {1}",
-                                          additionalStorageAccountNames.Count(), additionalStorageAccountKeys.Count()));
-                    }
+                        var additionalStorageAccountNames = additionalStorageAccountNamesValue.Split(new char[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries);
+                        var additionalStorageAccountKeys = additionalStorageAccountKeysValue.Split(new char[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries);
 
-                    for (int i = 0; i < additionalStorageAccountNames.Count(); i++)
-                    {
-                        var additionalStorageAccount = new AzureStorageConfig()
+                        if (additionalStorageAccountNames.Count() != additionalStorageAccountKeys.Count())
                         {
-                            Name = additionalStorageAccountNames[i],
-                            Key = additionalStorageAccountKeys[i]
-                        };
+                            throw new ApplicationException(
+                                String.Format("AdditionalStorageAccountNames.Count: {0} is not equal to AdditionalStorageAccountKeys.Count: {1}",
+                                              additionalStorageAccountNames.Count(), additionalStorageAccountKeys.Count()));
+                        }
 
-                        _additionalStorageAccounts.Add(additionalStorageAccount);
+                        for (int i = 0; i < additionalStorageAccountNames.Count(); i++)
+                        {
+                            var additionalStorageAccount = new AzureStorageConfig()
+                            {
+                                Name = additionalStorageAccountNames[i],
+                                Key = additionalStorageAccountKeys[i]
+                            };
+
+                            _additionalStorageAccounts.Add(additionalStorageAccount);
+                        }
                     }
                 }
                 return _additionalStorageAccounts;
@@ -471,14 +483,30 @@ namespace HDInsightManagementCLI
             get { return GetConfigurationValue(ConfigName.ZookeeperSize); }
         }
 
+        private string _virtualNetworkId = null;
         public string VirtualNetworkId
         {
-            get { return GetConfigurationValue(ConfigName.VirtualNetworkId); }
+            get
+            {
+                if (_virtualNetworkId == null)
+                {
+                    bool result = TryGetConfigurationValue(ConfigName.VirtualNetworkId, out _virtualNetworkId);
+                }
+                return _virtualNetworkId;
+            }
         }
 
+        private string _subnetName = null;
         public string SubnetName
         {
-            get { return GetConfigurationValue(ConfigName.SubnetName); }
+            get
+            {
+                if (_subnetName == null)
+                {
+                    bool result = TryGetConfigurationValue(ConfigName.SubnetName, out _subnetName);
+                }
+                return _subnetName;
+            }
         }
 
         public int OperationPollIntervalInSeconds
